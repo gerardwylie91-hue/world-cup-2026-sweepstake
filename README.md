@@ -1,27 +1,34 @@
 # World Cup 2026 Sweepstake Tracker
 
-A private sweepstake tracker for Gerard, Sarah, Barry, Thrish, Fiona and Alan.
+Live Next.js sweepstake tracker using the original app rules and live update structure, updated with Gerard's six contestants and forty-eight assigned teams.
 
-## Live app
+## Current setup
 
-This repo contains a static HTML app that can be deployed directly on Vercel.
+- Gerard
+- Sarah
+- Barry
+- Thrish
+- Fiona
+- Alan
 
-## Scoring
+Each contestant owns 8 teams.
 
-- Group-stage win: 3 points
-- Group-stage draw: 1 point
-- Group-stage loss: 0 points
-- Goals do not add extra points
+## Original scoring restored
 
-## Current features
+- Goal scored by your team: +1
+- Group-stage win: +3
+- Group-stage draw: +1
+- Round of 32 bonus: +2
+- Round of 16 bonus: +3
+- Quarter-final bonus: +4
+- Semi-final bonus: +5
+- Tournament winner bonus: +6
+- Progression bonuses are cumulative.
 
-- Six contestants
-- Forty-eight assigned teams
-- All group fixtures
-- Irish/UK kick-off times
-- Team ownership display
-- Mobile-friendly leaderboard screen
+## Live updates
 
-## Deployment
+The app polls `/api/standings` every 60 seconds. The API route pulls World Cup 2026 scores from TheSportsDB and calculates the leaderboard.
 
-Import this repository into Vercel and deploy it as a static project.
+## Deploy on Vercel
+
+Import this repository as a Next.js project and click Deploy.
