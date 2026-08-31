@@ -1,0 +1,8 @@
+node_modules/
+public/
+test-results/
+playwright-report/
+.vercel/
+.env*
+steady-src/generated-vercel.json
+steady-*-encrypted-backup.json

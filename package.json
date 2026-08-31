@@ -1,0 +1,13 @@
+{
+  "name": "steady-private-recovery",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node steady-src/release.cjs",
+    "test": "node --test steady-src/quality.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
