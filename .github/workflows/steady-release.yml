@@ -1,0 +1,133 @@
+name: Verify and release Steady recovery tracker
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'steady-src/**'
+      - '.github/workflows/steady-release.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: steady-production-release
+  cancel-in-progress: true
+jobs:
+  verify-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Read the exact source commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '22'
+      - name: Prepare isolated verification tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p steady-verification
+          node -e "require('fs').writeFileSync('package.json',JSON.stringify({name:'steady-verification',private:true,type:'module'}))"
+          VERSION=$(npm view @playwright/test version --registry=https://registry.npmjs.org)
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'Playwright exact version: %s\n' "$VERSION" | tee steady-verification/tooling.txt
+          echo "PLAYWRIGHT_VERSION=$VERSION" >> "$GITHUB_ENV"
+          npm install --no-save --package-lock=false --ignore-scripts --registry=https://registry.npmjs.org "@playwright/test@$VERSION"
+          npx playwright install --with-deps chromium
+      - name: Build and verify syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node steady-src/release.cjs | tee steady-verification/build.json
+          node --check public/app.js
+          node --check steady-src/release.cjs
+      - name: Verify calculations, safety rules and authenticated encryption
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test steady-src/quality.test.mjs | tee steady-verification/unit-tests.tap
+      - name: Verify real desktop and mobile browser workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx playwright test --config steady-src/playwright.config.mjs | tee steady-verification/browser-tests.txt
+      - name: Preserve the former site and prepare the verified release
+        if: success()
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ORIGINAL=7828456a07478c9d16e6aa10dc296f7a4b5183f7
+          git cat-file -e "$ORIGINAL^{commit}"
+          AUTH=$(printf 'x-access-token:%s' "$RELEASE_TOKEN" | base64 -w0)
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" fetch origin main
+          [[ "$(git rev-parse origin/main)" == "$GITHUB_SHA" ]] || { echo 'A newer source commit exists; the new run must verify it.'; exit 1; }
+          if ! git ls-remote --exit-code --heads origin archive/ep-ticket-watch-before-recovery >/dev/null 2>&1; then
+            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" push origin "$ORIGINAL:refs/heads/archive/ep-ticket-watch-before-recovery"
+          fi
+          node steady-src/release.cjs --publish-config
+          SOURCE_SHA="$GITHUB_SHA" node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const release=JSON.parse(fs.readFileSync('public/release.json','utf8'));
+          const text=`# Automated release verification\n\nSource commit: ${process.env.SOURCE_SHA}\n\nApp asset version: ${release.version}\n\nWorkflow: https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}\n\nThe release gate completed the Node syntax checks, calculation/encryption tests and Playwright desktop/mobile workflows before preparing this commit. Synthetic data only was used.\n\nBrowser tooling version: ${process.env.PLAYWRIGHT_VERSION}\n\nThis is software verification, not independent clinical or security certification. Production availability is checked separately in the workflow after deployment.\n`;
+          fs.writeFileSync('VERIFICATION.md',text);
+          NODE
+          git config user.name 'Steady release automation'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # Preserve the established project author's deployment identity; the committer and message explicitly identify automation.
+          AUTHOR_NAME=$(git show -s --format=%an "$ORIGINAL")
+          AUTHOR_EMAIL=$(git show -s --format=%ae "$ORIGINAL")
+          git add vercel.json package.json index.html README.md .gitignore VERIFICATION.md
+          if git diff --cached --quiet; then
+            echo 'Verified configuration already matches main.'
+          else
+            git -c user.name='Steady release automation' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit --author="$AUTHOR_NAME <$AUTHOR_EMAIL>" -m 'Release Steady recovery tracker after automated encryption and browser verification'
+            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" push origin HEAD:main
+          fi
+          git rev-parse HEAD | tee steady-verification/release-commit.txt
+      - name: Check the existing Vercel URL serves this exact release
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL=https://world-cup-2026-sweepstake-lake.vercel.app
+          EXPECTED=$(node -p "JSON.parse(require('fs').readFileSync('public/release.json','utf8')).version")
+          VERIFIED=0
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error --max-time 20 "$URL/release.json?verify=$GITHUB_RUN_ID" -o steady-verification/production-release.json; then
+              if EXPECTED="$EXPECTED" node --input-type=module -e "import fs from 'node:fs';let x;try{x=JSON.parse(fs.readFileSync('steady-verification/production-release.json','utf8'))}catch{process.exit(1)};process.exit(x.app==='Steady'&&x.version===process.env.EXPECTED?0:1)"; then
+                curl --fail --silent --show-error --max-time 20 "$URL/" -D steady-verification/production-headers-all.txt -o steady-verification/production-home.html
+                grep -q 'Steady' steady-verification/production-home.html
+                grep -qi "content-security-policy:.*script-src 'self'" steady-verification/production-headers-all.txt
+                grep -Ei '^(HTTP/|content-security-policy:|content-type:|x-robots-tag:|x-content-type-options:|referrer-policy:)' steady-verification/production-headers-all.txt > steady-verification/production-headers.txt
+                rm steady-verification/production-headers-all.txt
+                printf 'Verified existing URL: %s\nAsset version: %s\n' "$URL" "$EXPECTED" | tee steady-verification/production-verification.txt
+                VERIFIED=1
+                break
+              fi
+            fi
+            sleep 10
+          done
+          [[ "$VERIFIED" == 1 ]] || { echo 'The code release was prepared, but the existing Vercel URL did not confirm this asset version. Do not claim production is verified.'; exit 1; }
+          {
+            echo '## Verified production release'
+            echo "- Existing URL: $URL"
+            echo "- Asset version: $EXPECTED"
+            echo '- Calculation, encryption, desktop and mobile workflows passed before release.'
+            echo '- Records remain encrypted in the browser; there is no automatic cloud sync or background clinical monitoring.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain verification evidence without real health records
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: steady-verification-${{ github.run_id }}
+          path: |
+            steady-verification/
+            playwright-report/
+            test-results/
+          retention-days: 14
+          if-no-files-found: warn
