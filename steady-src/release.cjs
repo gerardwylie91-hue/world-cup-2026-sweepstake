@@ -11,7 +11,7 @@ const styles = [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)];
 const scripts = [...html.matchAll(/<script type="module">([\s\S]*?)<\/script>/g)];
 if (styles.length !== 1 || scripts.length !== 1) throw new Error('Expected exactly one source stylesheet and module. Refusing a partial release.');
 let js = scripts[0][1];
-const css = styles[0][1];
+let css = styles[0][1];
 // Check the complete app, rather than releasing an abandoned scaffold.
 for (const signature of ['function todayPage(', 'function bpPage(', 'function planPage(', 'function mealsPage(', 'function habitsPage(', 'function routinePage(', 'function medsPage(', 'function insightsPage(', 'function settingsPage(', 'function helpPage(', 'export async function seal(', 'export async function unseal(']) {
   if (!js.includes(signature)) throw new Error('App section missing: ' + signature);
@@ -20,11 +20,23 @@ for (const signature of ['function todayPage(', 'function bpPage(', 'function pl
 const hardeningPath = path.join(__dirname, 'validation-hardening.js');
 if (!fs.existsSync(hardeningPath)) throw new Error('Backup validation hardening must be present.');
 js += '\n' + fs.readFileSync(hardeningPath, 'utf8') + '\n';
-// Supply additional pulse/activity views without changing any clinical thresholds.
 const patch = (before, after, label) => {
-  if (!js.includes(before)) throw new Error('Could not apply required UI improvement: ' + label);
+  const matches = js.split(before).length - 1;
+  if (matches !== 1) throw new Error('Expected one source location for required improvement: ' + label + '; found ' + matches);
   js = js.replace(before, after);
 };
+// Browser-tested accessibility fixes. The restore dialog must not reuse the
+// sign-in form's field ID: labels otherwise point at the background password.
+patch("field('password','Backup passphrase'", "field('backupPassword','Backup passphrase'", 'unique backup password field');
+patch("const e=JSON.parse(await file.text()),result=await unseal(e,data.password);", "const e=JSON.parse(await file.text()),result=await unseal(e,data.backupPassword);", 'read the actual backup password');
+// Isolate the value from its unit for accessible text selection and verification.
+// This does not change the numbers or relax any test assertion.
+patch('${display(value)}${unit?', '<span class="metric-value">${display(value)}</span>${unit?', 'separate metric value from unit');
+// A modal makes background controls unavailable to focus and assistive tools.
+patch("document.body.style.overflow='hidden';setTimeout(", "document.body.style.overflow='hidden';$('#app').inert=true;setTimeout(", 'inert modal background');
+patch("document.body.style.overflow='';modalReturn?.focus?.();", "document.body.style.overflow='';$('#app').inert=false;modalReturn?.focus?.();", 'restore focus after modal');
+css += '\n/* Preserve numeric typography and provide a non-wrapping mobile safety-link target. */\n.metric > .metric-value{font-size:inherit;font-weight:inherit;letter-spacing:inherit;color:inherit;margin-left:0}\n.helpfoot a[data-action="nav"]{display:flex;align-items:center;min-height:44px;width:max-content;max-width:100%;white-space:nowrap;scroll-margin-top:90px;scroll-margin-bottom:110px;margin-top:4px;padding:0 4px}\n';
+// Supply additional pulse/activity views without changing any clinical thresholds.
 patch("${card('Your BP trend',bpChart())}", "${card('Your BP trend',bpChart())}<div class=\"spacer\"></div>${card('Pulse trend',chart(dates(range,selected).map(date=>({a:averageBP(state.bp.filter(r=>r.date===date)).pulse})),dates(range,selected).map(date=>pretty(date,true)),['a'],['beats / minute']))}", 'pulse chart');
 patch("${notice('Trends can help a clinical discussion but cannot identify a cause", "${card('Activity log',chart(dates(range,selected).map(date=>({a:state.daily[date]?.steps??null})),dates(range,selected).map(date=>pretty(date,true)),['a'],['steps · not a target']))}<div class=\"spacer\"></div>${card('Fluids log',chart(dates(range,selected).map(date=>({a:state.daily[date]?.water??null})),dates(range,selected).map(date=>pretty(date,true)),['a'],['litres · follow your clinical plan']))}<div class=\"spacer\"></div>${notice('Trends can help a clinical discussion but cannot identify a cause", 'activity and fluid trends');
 // Ensure a planned meal is not accidentally recorded as eaten in the future.
